@@ -1,0 +1,135 @@
+---
+- name: Install and configure tun2socks macOS project
+  hosts: mac
+  gather_facts: true
+  become: true
+
+  vars:
+    project_root: "{{ playbook_dir }}/.."
+    config_path: /usr/local/etc/tun2socks.conf
+    routeguard_path: /usr/local/sbin/tun2socks-routeguard.sh
+    start_path: /usr/local/sbin/start-tun2socks.sh
+    stop_path: /usr/local/sbin/stop-tun2socks.sh
+    install_tools_path: /usr/local/sbin/install-tun2socks-tools.sh
+    launchd_path: /Library/LaunchDaemons/local.tun2socks.routeguard.plist
+
+    # Override these via --extra-vars or edit here.
+    real_if: en0
+    ssh_user: user
+    ssh_host: 203.0.113.10
+    ssh_ip: 203.0.113.10
+    ssh_port: "22"
+    ssh_identity_file: ""
+    ssh_tunnels_count: "10"
+    socks_host: 127.0.0.1
+    socks_base_port: "1080"
+    socks_balancer_port: "1090"
+    gost_strategy: round
+    gost_max_fails: "1"
+    gost_fail_timeout: 10s
+    tun_if: utun123
+    tun_gw: 198.18.0.1
+    route_mode: default
+    check_interval: "3"
+    tun2socks_version: v2.6.0
+
+  tasks:
+    - name: Ensure macOS
+      ansible.builtin.assert:
+        that:
+          - ansible_system == "Darwin"
+        fail_msg: "This playbook is intended for macOS only."
+
+    - name: Ensure directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: wheel
+        mode: "0755"
+      loop:
+        - /usr/local/etc
+        - /usr/local/sbin
+
+    - name: Install start script
+      ansible.builtin.copy:
+        src: "{{ project_root }}/bin/start-tun2socks.sh"
+        dest: "{{ start_path }}"
+        owner: root
+        group: wheel
+        mode: "0755"
+
+    - name: Install stop script
+      ansible.builtin.copy:
+        src: "{{ project_root }}/bin/stop-tun2socks.sh"
+        dest: "{{ stop_path }}"
+        owner: root
+        group: wheel
+        mode: "0755"
+
+    - name: Install routeguard script
+      ansible.builtin.copy:
+        src: "{{ project_root }}/bin/tun2socks-routeguard.sh"
+        dest: "{{ routeguard_path }}"
+        owner: root
+        group: wheel
+        mode: "0755"
+
+    - name: Install tools installer
+      ansible.builtin.copy:
+        src: "{{ project_root }}/bin/install-tools-macos.sh"
+        dest: "{{ install_tools_path }}"
+        owner: root
+        group: wheel
+        mode: "0755"
+
+    - name: Render configuration
+      ansible.builtin.copy:
+        dest: "{{ config_path }}"
+        owner: root
+        group: wheel
+        mode: "0644"
+        content: |
+          REAL_IF="{{ real_if }}"
+          SSH_USER="{{ ssh_user }}"
+          SSH_HOST="{{ ssh_host }}"
+          SSH_IP="{{ ssh_ip }}"
+          SSH_PORT="{{ ssh_port }}"
+          SSH_IDENTITY_FILE="{{ ssh_identity_file }}"
+          SSH_TUNNELS_COUNT="{{ ssh_tunnels_count }}"
+          SOCKS_HOST="{{ socks_host }}"
+          SOCKS_BASE_PORT="{{ socks_base_port }}"
+          SOCKS_BALANCER_PORT="{{ socks_balancer_port }}"
+          GOST_STRATEGY="{{ gost_strategy }}"
+          GOST_MAX_FAILS="{{ gost_max_fails }}"
+          GOST_FAIL_TIMEOUT="{{ gost_fail_timeout }}"
+          TUN_IF="{{ tun_if }}"
+          TUN_GW="{{ tun_gw }}"
+          ROUTE_MODE="{{ route_mode }}"
+          CHECK_INTERVAL="{{ check_interval }}"
+          LOG_FILE="/var/log/tun2socks-routeguard.log"
+          RUNTIME_DIR="/var/run/tun2socks-macos"
+
+    - name: Install routeguard LaunchDaemon
+      ansible.builtin.copy:
+        src: "{{ project_root }}/launchd/local.tun2socks.routeguard.plist"
+        dest: "{{ launchd_path }}"
+        owner: root
+        group: wheel
+        mode: "0644"
+
+    - name: Install tun2socks and gost
+      ansible.builtin.command: "{{ install_tools_path }}"
+      environment:
+        TUN2SOCKS_VERSION: "{{ tun2socks_version }}"
+      changed_when: true
+
+    - name: Bootstrap routeguard LaunchDaemon
+      ansible.builtin.command: launchctl bootstrap system {{ launchd_path }}
+      register: bootstrap_result
+      failed_when: bootstrap_result.rc not in [0, 5]
+      changed_when: bootstrap_result.rc == 0
+
+    - name: Enable routeguard LaunchDaemon
+      ansible.builtin.command: launchctl enable system/local.tun2socks.routeguard
+      changed_when: true

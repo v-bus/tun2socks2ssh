@@ -1,0 +1,53 @@
+# tun2socks macOS project configuration
+# Copy to /usr/local/etc/tun2socks.conf and edit.
+
+# Real interface that reaches your SSH server without tun2socks.
+# Usually en0 for Wi-Fi. Use: route -n get default | awk '/interface:/ {print $2}'
+REAL_IF="en0"
+
+# SSH endpoint. Prefer fixed IP for SSH_IP, because routeguard protects a host route.
+SSH_USER="user"
+SSH_HOST="123.123.123.123"
+SSH_IP="123.123.123.123"
+SSH_PORT="22"
+
+# SSH identity file is optional. Leave empty to use ssh-agent/default keys.
+SSH_IDENTITY_FILE="/Users/YOUR_USER/.ssh/id_ed25519"
+SSH_IDENTITIES_ONLY="yes"
+TUN_MTU="1400"
+SSH_KNOWN_HOSTS_FILE="/usr/local/etc/tun2socks_known_hosts"
+SSH_STRICT_HOST_KEY_CHECKING="yes"
+
+# Number of parallel ssh -D SOCKS tunnels.
+# The project starts ports SOCKS_BASE_PORT ... SOCKS_BASE_PORT + SSH_TUNNELS_COUNT - 1.
+SSH_TUNNELS_COUNT="10"
+SOCKS_HOST="127.0.0.1"
+SOCKS_BASE_PORT="1080"
+
+# Local GOST SOCKS balancer. tun2socks talks to this port.
+SOCKS_BALANCER_PORT="1090"
+GOST_STRATEGY="round"
+GOST_MAX_FAILS="1"
+GOST_FAIL_TIMEOUT="10s"
+
+# tun2socks interface settings.
+TUN_IF="utun123"
+TUN_GW="198.18.0.1"
+
+# Routing mode:
+#   default       = route change default TUN_GW + host route to SSH_IP through real gateway
+#   split-default = add large routes; safer, but not requested as primary mode
+ROUTE_MODE="default"
+
+# Routeguard settings.
+CHECK_INTERVAL="3"
+LOG_FILE="/var/log/tun2socks-routeguard.log"
+
+# Runtime state.
+RUNTIME_DIR="/var/run/tun2socks-macos"
+
+# DNS settings
+DNS_SERVICE_NAME="Wi-Fi"
+DNS_SERVERS=("127.0.0.1")
+DNS_BACKUP_FILE="$RUNTIME_DIR/dns-backup.txt"
+DNS_MANAGE="yes"
