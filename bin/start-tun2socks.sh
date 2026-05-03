@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+OS="$(uname -s)"
 CONFIG="${TUN2SOCKS_CONFIG:-/usr/local/etc/tun2socks.conf}"
 
 if [[ ! -f "$CONFIG" ]]; then
   echo "Config not found: $CONFIG" >&2
-  echo "Copy config/tun2socks.conf.example to /usr/local/etc/tun2socks.conf and edit it." >&2
+  echo "Copy config/tun2socks.conf.example (or config/tun2socks.conf.linux.example on Linux) to /usr/local/etc/tun2socks.conf and edit it." >&2
   exit 1
 fi
 
@@ -26,11 +27,25 @@ source "$CONFIG"
 : "${GOST_STRATEGY:=round}"
 : "${GOST_MAX_FAILS:=1}"
 : "${GOST_FAIL_TIMEOUT:=10s}"
-: "${TUN_IF:=utun123}"
+case "$OS" in
+  Linux)
+    : "${TUN_IF:=tun0}"
+    ;;
+  *)
+    : "${TUN_IF:=utun123}"
+    ;;
+esac
 : "${TUN_GW:=198.18.0.1}"
 : "${TUN_MTU:=1400}"
 : "${ROUTE_MODE:=default}"
-: "${RUNTIME_DIR:=/var/run/tun2socks-macos}"
+case "$OS" in
+  Linux)
+    : "${RUNTIME_DIR:=/var/run/tun2socks}"
+    ;;
+  *)
+    : "${RUNTIME_DIR:=/var/run/tun2socks-macos}"
+    ;;
+esac
 
 SSH_PID_DIR="$RUNTIME_DIR/ssh"
 GOST_PID_FILE="$RUNTIME_DIR/gost.pid"
@@ -49,16 +64,30 @@ if [[ "${EUID}" -ne 0 ]]; then
   exec sudo TUN2SOCKS_CONFIG="$CONFIG" "$0" "$@"
 fi
 
-require_cmd ssh
-require_cmd route
-require_cmd ifconfig
-require_cmd ipconfig
-require_cmd tun2socks
-require_cmd gost
-require_cmd networksetup
+if [[ "$OS" == "Darwin" ]]; then
+  require_cmd ssh
+  require_cmd route
+  require_cmd ifconfig
+  require_cmd ipconfig
+  require_cmd tun2socks
+  require_cmd gost
+  require_cmd networksetup
+elif [[ "$OS" == "Linux" ]]; then
+  require_cmd ssh
+  require_cmd ip
+  require_cmd tun2socks
+  require_cmd gost
+else
+  echo "Unsupported OS: $OS (expected Darwin or Linux)" >&2
+  exit 1
+fi
 
 mkdir -p "$RUNTIME_DIR" "$SSH_PID_DIR"
-chown root:wheel "$RUNTIME_DIR" "$SSH_PID_DIR"
+if [[ "$OS" == "Darwin" ]]; then
+  chown root:wheel "$RUNTIME_DIR" "$SSH_PID_DIR"
+else
+  chown root:root "$RUNTIME_DIR" "$SSH_PID_DIR"
+fi
 chmod 755 "$RUNTIME_DIR" "$SSH_PID_DIR"
 
 if [[ -n "$SSH_IDENTITY_FILE" && ! -f "$SSH_IDENTITY_FILE" ]]; then
@@ -66,10 +95,24 @@ if [[ -n "$SSH_IDENTITY_FILE" && ! -f "$SSH_IDENTITY_FILE" ]]; then
   exit 1
 fi
 
-REAL_GW="$(ipconfig getoption "$REAL_IF" router 2>/dev/null | head -n 1 || true)"
+detect_real_gateway_darwin() {
+  REAL_GW="$(ipconfig getoption "$REAL_IF" router 2>/dev/null | head -n 1 || true)"
+  if [[ -z "$REAL_GW" ]]; then
+    REAL_GW="$(route -n get default | awk '/gateway:/ {print $2; exit}')"
+  fi
+}
 
-if [[ -z "$REAL_GW" ]]; then
-  REAL_GW="$(route -n get default | awk '/gateway:/ {print $2; exit}')"
+detect_real_gateway_linux() {
+  REAL_GW="$(ip -4 route show dev "$REAL_IF" 2>/dev/null | awk '/default/ {print $3; exit}')"
+  if [[ -z "$REAL_GW" ]]; then
+    REAL_GW="$(ip -4 route show default 2>/dev/null | awk '/default/ {print $3; exit}')"
+  fi
+}
+
+if [[ "$OS" == "Darwin" ]]; then
+  detect_real_gateway_darwin
+elif [[ "$OS" == "Linux" ]]; then
+  detect_real_gateway_linux
 fi
 
 if [[ -z "$REAL_GW" ]]; then
@@ -100,12 +143,23 @@ backup_dns() {
     return 0
   fi
 
-  echo "Backing up DNS for service: $DNS_SERVICE_NAME"
-
-  networksetup -getdnsservers "$DNS_SERVICE_NAME" > "$DNS_BACKUP_FILE" 2>/dev/null || {
-    echo "ERROR: cannot read DNS servers for service: $DNS_SERVICE_NAME" >&2
-    exit 1
-  }
+  if [[ "$OS" == "Darwin" ]]; then
+    echo "Backing up DNS for service: $DNS_SERVICE_NAME"
+    networksetup -getdnsservers "$DNS_SERVICE_NAME" > "$DNS_BACKUP_FILE" 2>/dev/null || {
+      echo "ERROR: cannot read DNS servers for service: $DNS_SERVICE_NAME" >&2
+      exit 1
+    }
+  elif [[ "$OS" == "Linux" ]]; then
+    if ! command -v resolvectl >/dev/null 2>&1; then
+      echo "WARN: DNS_MANAGE=yes but resolvectl not found; skipping DNS changes" >&2
+      return 0
+    fi
+    echo "Backing up DNS for link: $REAL_IF (resolvectl)"
+    resolvectl dns "$REAL_IF" > "$DNS_BACKUP_FILE" 2>/dev/null || {
+      echo "ERROR: cannot read DNS for interface: $REAL_IF" >&2
+      exit 1
+    }
+  fi
 }
 
 set_cloudflare_dns() {
@@ -113,9 +167,16 @@ set_cloudflare_dns() {
     return 0
   fi
 
-  echo "Setting Cloudflare DNS for service: $DNS_SERVICE_NAME -> ${DNS_SERVERS[*]}"
-
-  networksetup -setdnsservers "$DNS_SERVICE_NAME" "${DNS_SERVERS[@]}"
+  if [[ "$OS" == "Darwin" ]]; then
+    echo "Setting Cloudflare DNS for service: $DNS_SERVICE_NAME -> ${DNS_SERVERS[*]}"
+    networksetup -setdnsservers "$DNS_SERVICE_NAME" "${DNS_SERVERS[@]}"
+  elif [[ "$OS" == "Linux" ]]; then
+    if ! command -v resolvectl >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "Setting DNS for link $REAL_IF -> ${DNS_SERVERS[*]} (resolvectl)"
+    resolvectl dns "$REAL_IF" "${DNS_SERVERS[@]}"
+  fi
 }
 
 restore_dns_on_error() {
@@ -127,20 +188,36 @@ restore_dns_on_error() {
     return 0
   fi
 
-  if grep -q "There aren't any DNS Servers set" "$DNS_BACKUP_FILE"; then
-    networksetup -setdnsservers "$DNS_SERVICE_NAME" Empty >/dev/null 2>&1 || true
-  else
-    mapfile -t old_dns < "$DNS_BACKUP_FILE"
-    if [[ "${#old_dns[@]}" -gt 0 ]]; then
-      networksetup -setdnsservers "$DNS_SERVICE_NAME" "${old_dns[@]}" >/dev/null 2>&1 || true
+  if [[ "$OS" == "Darwin" ]]; then
+    if grep -q "There aren't any DNS Servers set" "$DNS_BACKUP_FILE"; then
+      networksetup -setdnsservers "$DNS_SERVICE_NAME" Empty >/dev/null 2>&1 || true
+    else
+      mapfile -t old_dns < "$DNS_BACKUP_FILE"
+      if [[ "${#old_dns[@]}" -gt 0 ]]; then
+        networksetup -setdnsservers "$DNS_SERVICE_NAME" "${old_dns[@]}" >/dev/null 2>&1 || true
+      fi
     fi
+  elif [[ "$OS" == "Linux" ]]; then
+    command -v resolvectl >/dev/null 2>&1 || return 0
+    # Backup format is one line from resolvectl dns LINK
+    if [[ ! -s "$DNS_BACKUP_FILE" ]]; then
+      resolvectl revert "$REAL_IF" >/dev/null 2>&1 || true
+      return 0
+    fi
+    # Try revert first (restores manager defaults)
+    resolvectl revert "$REAL_IF" >/dev/null 2>&1 || true
   fi
 }
 
 add_ssh_route() {
   echo "Protecting SSH route: $SSH_IP -> $REAL_GW via $REAL_IF"
-  route delete -host "$SSH_IP" >/dev/null 2>&1 || true
-  route add -host "$SSH_IP" "$REAL_GW"
+  if [[ "$OS" == "Darwin" ]]; then
+    route delete -host "$SSH_IP" >/dev/null 2>&1 || true
+    route add -host "$SSH_IP" "$REAL_GW"
+  else
+    ip route del "$SSH_IP/32" >/dev/null 2>&1 || true
+    ip route replace "$SSH_IP/32" via "$REAL_GW" dev "$REAL_IF"
+  fi
 }
 
 start_ssh_tunnels() {
@@ -283,6 +360,23 @@ start_gost_balancer() {
   fi
 }
 
+configure_tun_address_darwin() {
+  ifconfig "$TUN_IF" "$TUN_GW" "$TUN_GW" up
+
+  if [[ -n "$TUN_MTU" ]]; then
+    ifconfig "$TUN_IF" mtu "$TUN_MTU" >/dev/null 2>&1 || true
+  fi
+}
+
+configure_tun_address_linux() {
+  ip link set "$TUN_IF" up 2>/dev/null || true
+  ip addr flush dev "$TUN_IF" 2>/dev/null || true
+  ip addr add "${TUN_GW}/32" dev "$TUN_IF"
+  if [[ -n "$TUN_MTU" ]]; then
+    ip link set dev "$TUN_IF" mtu "$TUN_MTU" 2>/dev/null || true
+  fi
+}
+
 start_tun2socks() {
   echo "Starting tun2socks on $TUN_IF via GOST balancer $SOCKS_HOST:$SOCKS_BALANCER_PORT"
 
@@ -300,14 +394,14 @@ start_tun2socks() {
     exit 1
   fi
 
-  ifconfig "$TUN_IF" "$TUN_GW" "$TUN_GW" up
-
-  if [[ -n "$TUN_MTU" ]]; then
-    ifconfig "$TUN_IF" mtu "$TUN_MTU" >/dev/null 2>&1 || true
+  if [[ "$OS" == "Darwin" ]]; then
+    configure_tun_address_darwin
+  else
+    configure_tun_address_linux
   fi
 }
 
-apply_routes() {
+apply_routes_darwin() {
   add_ssh_route
 
   if [[ "$ROUTE_MODE" == "default" ]]; then
@@ -341,11 +435,56 @@ apply_routes() {
   fi
 }
 
-start_routeguard_if_loaded() {
-  if launchctl print system/local.tun2socks.routeguard >/dev/null 2>&1; then
-    echo "Routeguard LaunchDaemon is loaded. It will monitor and restore routes."
+apply_routes_linux() {
+  add_ssh_route
+
+  if [[ "$ROUTE_MODE" == "default" ]]; then
+    echo "Changing default route to tunnel $TUN_IF"
+    ip route replace default dev "$TUN_IF"
   else
-    echo "Routeguard is not loaded. To enable: sudo launchctl bootstrap system /Library/LaunchDaemons/local.tun2socks.routeguard.plist"
+    echo "Adding split-default routes through $TUN_IF"
+
+    local routes=(
+      "1.0.0.0/8"
+      "2.0.0.0/7"
+      "4.0.0.0/6"
+      "8.0.0.0/5"
+      "16.0.0.0/4"
+      "32.0.0.0/3"
+      "64.0.0.0/2"
+      "128.0.0.0/1"
+      "198.18.0.0/15"
+    )
+
+    local net
+
+    for net in "${routes[@]}"; do
+      ip route replace "$net" dev "$TUN_IF" >/dev/null 2>&1 || ip route add "$net" dev "$TUN_IF" >/dev/null 2>&1 || true
+    done
+  fi
+}
+
+apply_routes() {
+  if [[ "$OS" == "Darwin" ]]; then
+    apply_routes_darwin
+  else
+    apply_routes_linux
+  fi
+}
+
+start_routeguard_if_loaded() {
+  if [[ "$OS" == "Darwin" ]]; then
+    if launchctl print system/local.tun2socks.routeguard >/dev/null 2>&1; then
+      echo "Routeguard LaunchDaemon is loaded. It will monitor and restore routes."
+    else
+      echo "Routeguard is not loaded. To enable: sudo launchctl bootstrap system /Library/LaunchDaemons/local.tun2socks.routeguard.plist"
+    fi
+  elif [[ "$OS" == "Linux" ]]; then
+    if systemctl is-active tun2socks-routeguard.service >/dev/null 2>&1; then
+      echo "tun2socks-routeguard.service is active. It will monitor and restore routes."
+    else
+      echo "Routeguard service is not active. To enable: sudo systemctl enable --now tun2socks-routeguard.service"
+    fi
   fi
 }
 
@@ -360,7 +499,12 @@ start_routeguard_if_loaded
 
 echo
 echo "Started. Checks:"
-echo "  route -n get $SSH_IP | egrep 'gateway|interface'"
-echo "  route -n get default | egrep 'gateway|interface'"
+if [[ "$OS" == "Darwin" ]]; then
+  echo "  route -n get $SSH_IP | egrep 'gateway|interface'"
+  echo "  route -n get default | egrep 'gateway|interface'"
+else
+  echo "  ip route get $SSH_IP"
+  echo "  ip route show default"
+fi
 echo "  curl --socks5-hostname $SOCKS_HOST:$SOCKS_BALANCER_PORT https://ifconfig.me"
 echo "  curl https://ifconfig.me"
