@@ -44,6 +44,56 @@ tun2socks-macos-project/
 
 ---
 
+Для удалённого **SSH-хоста/VPS**, через который идёт `ssh -D`, настройки  такие.
+
+## `/etc/ssh/sshd_config`
+
+Открыть на сервере:
+
+```bash
+sudo nano /etc/ssh/sshd_config
+```
+
+Проверить/добавить:
+
+```text
+AllowTcpForwarding yes
+PermitOpen any
+GatewayPorts no
+
+TCPKeepAlive yes
+ClientAliveInterval 60
+ClientAliveCountMax 3
+```
+
+Желательно также оставить вход только по ключу:
+
+```text
+PubkeyAuthentication yes
+PasswordAuthentication no
+PermitRootLogin no
+```
+
+После изменения:
+
+```bash
+sudo sshd -t
+```
+
+Если ошибок нет:
+
+```bash
+sudo systemctl reload sshd
+```
+
+или на некоторых системах:
+
+```bash
+sudo systemctl reload ssh
+```
+
+---
+
 ## Что устанавливается
 
 - `tun2socks` — TUN-интерфейс, который отправляет IP-трафик в SOCKS-прокси.
