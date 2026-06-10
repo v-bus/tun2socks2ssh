@@ -1,0 +1,15 @@
+[Unit]
+Description=tun2socks SSH route watchdog (restore routes after network events)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=TUN2SOCKS_CONFIG=/usr/local/etc/tun2socks.conf
+ExecStart=/usr/local/sbin/tun2socks-routeguard.sh
+Restart=always
+RestartSec=3
+
+# Routeguard only monitors routes; the tunnel stack is started manually or by another unit.
+[Install]
+WantedBy=multi-user.target

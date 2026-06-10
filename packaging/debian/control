@@ -1,0 +1,10 @@
+Package: tun2socks-ssh-stack
+Version: DEB_VERSION_PLACEHOLDER
+Architecture: ARCH_PLACEHOLDER
+Maintainer: tun2socks-macos contributors
+Section: net
+Priority: optional
+Depends: iproute2, openssh-client, lsof, unzip, ca-certificates
+Description: tun2socks SSH SOCKS stack scripts and routeguard
+ Bundled tun2socks and gost binaries plus shell scripts to run ssh -D tunnels,
+ a local GOST SOCKS balancer, tun2socks, and a systemd routeguard service.

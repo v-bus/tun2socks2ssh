@@ -27,19 +27,114 @@ default       -> TUN_GW / TUN_IF
 
 ```text
 tun2socks-macos-project/
+├── Makefile
 ├── README.md
 ├── ansible/
 │   ├── install-tun2socks-macos.yml
 │   └── inventory.example.ini
 ├── bin/
+│   ├── install-tools-linux.sh
 │   ├── install-tools-macos.sh
 │   ├── start-tun2socks.sh
 │   ├── stop-tun2socks.sh
 │   └── tun2socks-routeguard.sh
 ├── config/
-│   └── tun2socks.conf.example
+│   ├── tun2socks.conf.example
+│   └── tun2socks.conf.linux.example
+├── packaging/
+│   ├── build-deb.sh
+│   ├── fetch-linux-binaries.sh
+│   └── debian/control
+├── systemd/
+│   └── tun2socks-routeguard.service
+├── tests/
+│   └── check-scripts.sh
 └── launchd/
     └── local.tun2socks.routeguard.plist
+```
+
+Скрипты `start-tun2socks.sh`, `stop-tun2socks.sh`, `tun2socks-routeguard.sh` общие: на macOS и Linux выбирают команды маршрутизации и DNS автоматически (`uname -s`).
+
+---
+
+## Linux
+
+Пути совпадают с macOS где это возможно: `/usr/local/sbin` для скриптов, `/usr/local/etc/tun2socks.conf`. На Linux по умолчанию `TUN_IF=tun0`, каталог рантайма `RUNTIME_DIR=/var/run/tun2socks`. Пример конфига: `config/tun2socks.conf.linux.example`.
+
+### Установка инструментов (релизы GitHub)
+
+```bash
+chmod +x bin/install-tools-linux.sh
+sudo ./bin/install-tools-linux.sh
+```
+
+Переопределение версий:
+
+```bash
+TUN2SOCKS_VERSION=v2.6.0 GOST_VERSION=v3.2.6 sudo -E ./bin/install-tools-linux.sh
+```
+
+### Сборка tun2socks из исходников
+
+Репозиторий upstream (например рядом с этим проектом):
+
+```bash
+export TUN2SOCKS_SRC=/path/to/tun2socks
+make build-tun2socks
+sudo install -m 0755 build/tun2socks /usr/local/bin/tun2socks
+```
+
+### Установка скриптов и systemd через make
+
+```bash
+sudo make install-linux install-systemd
+sudo cp config/tun2socks.conf.linux.example /usr/local/etc/tun2socks.conf
+sudo nano /usr/local/etc/tun2socks.conf
+sudo systemctl daemon-reload
+sudo systemctl enable --now tun2socks-routeguard.service
+```
+
+Запуск стека (как на macOS):
+
+```bash
+sudo /usr/local/sbin/start-tun2socks.sh
+sudo /usr/local/sbin/stop-tun2socks.sh
+```
+
+Routeguard в фоне следит за маршрутами, если сервис включён.
+
+### Пакет Debian (.deb)
+
+Сначала скачиваются бинарники `tun2socks` и `gost` под текущую архитектуру, затем собирается пакет `tun2socks-ssh-stack`:
+
+```bash
+make deb
+```
+
+Установка:
+
+```bash
+sudo dpkg -i build/tun2socks-ssh-stack_*.deb
+sudo cp /usr/local/etc/tun2socks.conf.example /usr/local/etc/tun2socks.conf
+sudo nano /usr/local/etc/tun2socks.conf
+sudo systemctl daemon-reload
+sudo systemctl enable --now tun2socks-routeguard.service
+```
+
+Пакет кладёт unit в `/usr/lib/systemd/system/tun2socks-routeguard.service`, бинарники в `/usr/local/bin`, скрипты в `/usr/local/sbin`.
+
+Уже скачанные бинарники лежат в `build/binaries/`. Только пересобрать deb без повторной загрузки:
+
+```bash
+make deb-only DEB_VERSION=0.1.0
+```
+
+### Проверка скриптов
+
+```bash
+make check
+# или
+./tests/check-scripts.sh
 ```
 
 ---
